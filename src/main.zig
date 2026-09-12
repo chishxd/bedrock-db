@@ -1,25 +1,38 @@
 const std = @import("std");
 
-// I am thinking of... defining a simple struct to read the blob
-// This struct must be able to store the key and value...
-// But if I store it as a binary, but not a JSON file, then I would need some
-// Kinda Identifier to check if the Blob is a DB object or not...
-// Then how do I identify a KEY and a VALUE?? Maybe I could store len of key
-// and len of value.. Or maybe a HEX value to indicate start and end of the values
-// Then I would be wasting 4 u8 integers, but if I just store the length of key and
-// value, it will be cheaper.. As the key can start immediately after Identifier
-// So the final structure could be an Identifier, then len of key, len of value
-// then actual key and value
-
 const MAGIC: [4]u8 = "BDRK".*;
 
 /// Fixed-sized Header to Identify DB data from blob
 const Header = struct {
-    magic: u32,
+    ///Identifier to know about Struct
+    magic: [4]u8,
+    /// Length of the key in DB
     key_len: u16,
+    /// Length of value in DB
     value_len: u32,
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const key: []const u8 = "user";
+    const value: []const u8 = "goku";
+
+    const io = init.io;
+
+    const header = Header{ .magic = MAGIC, .key_len = @intCast(key.len), .value_len = @intCast(value.len) };
+
+    const file = try std.Io.Dir.cwd().createFile(io, "test_db.db", .{});
+    defer file.close(io);
+
+    var buffer: [1024]u8 = undefined;
+    var file_writer = file.writer(io, &buffer);
+
+    var writer = &file_writer.interface;
+
+    try writer.writeAll(std.mem.asBytes(&header));
+    try writer.writeAll(key);
+    try writer.writeAll(value);
+
+    try file_writer.flush();
+
     std.debug.print("Size of header is: {d}\n", .{@sizeOf(Header)});
 }

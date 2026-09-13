@@ -3,11 +3,11 @@ const std = @import("std");
 const MAGIC: [4]u8 = "BDRK".*;
 
 /// Fixed-sized Header to Identify DB data from blob
-const Header = struct {
+const Header = extern struct {
     ///Identifier to know about Struct
     magic: [4]u8,
     /// Length of the key in DB
-    key_len: u16,
+    key_len: u32,
     /// Length of value in DB
     value_len: u32,
 };
@@ -15,7 +15,6 @@ const Header = struct {
 ///set functions stores the binary payload passed with key and value with a Header to identify the value
 fn set(io: std.Io, key: []const u8, value: []const u8) !void {
     const header = Header{ .magic = MAGIC, .key_len = @intCast(key.len), .value_len = @intCast(value.len) };
-
     const file = try std.Io.Dir.cwd().createFile(io, "test_db.db", .{ .truncate = false });
     defer file.close(io);
 
@@ -41,4 +40,16 @@ pub fn main(init: std.process.Init) !void {
 
     try set(io, key, value);
     std.debug.print("Successfully Stored key-value in Database\n", .{});
+}
+
+test "set writes record to disk" {
+    const io = std.testing.io;
+
+    try set(io, "hello", "world");
+
+    var file = try std.Io.Dir.cwd().openFile(io, "test_db.db", .{});
+    defer file.close(io);
+
+    const file_len = try file.length(io);
+    try std.testing.expectEqual(@as(u64, 22), file_len);
 }

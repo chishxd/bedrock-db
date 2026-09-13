@@ -80,3 +80,23 @@ test "set writes record to disk" {
     const file_len = try file.length(io);
     try std.testing.expectEqual(@as(u64, 22), file_len);
 }
+
+test "get reads record from disk" {
+    const io = std.testing.io;
+
+    const file = try std.Io.Dir.cwd().createFile(io, "test_get.db", .{ .truncate = false, .read = true });
+    defer file.close(io);
+    defer std.Io.Dir.cwd().deleteFile(io, "test_get.db") catch {};
+    try set(io, file, "hello", "world");
+
+    const allocator = std.testing.allocator;
+    const value_get = try get(io, file, "hello", allocator);
+
+    if (value_get) |s| {
+        defer allocator.free(s);
+
+        try std.testing.expectEqualStrings("world", s);
+    } else {
+        return error.ExpectedValueGotNull;
+    }
+}

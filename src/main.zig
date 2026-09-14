@@ -29,6 +29,7 @@ fn set(io: std.Io, file: std.Io.File, key: []const u8, value: []const u8) !void 
     try file_writer.flush();
 }
 
+/// get function returns the value for the passed key as a string.
 fn get(io: std.Io, file: std.Io.File, key: []const u8, allocator: std.mem.Allocator) !?[]u8 {
     var read_buf: [1024]u8 = undefined;
     var file_reader = file.reader(io, &read_buf);
@@ -66,15 +67,47 @@ fn get(io: std.Io, file: std.Io.File, key: []const u8, allocator: std.mem.Alloca
 }
 
 pub fn main(init: std.process.Init) !void {
-    const key: []const u8 = "user";
-    const value: []const u8 = "goku";
-
     const io = init.io;
-    const file = try std.Io.Dir.cwd().createFile(io, "test_db.db", .{ .truncate = false, .read = true });
+
+    const allocator = init.arena.allocator();
+    const args = try init.minimal.args.toSlice(allocator);
+
+    if (args.len < 2) {
+        std.debug.print(
+            \\Usage:
+            \\  bedrock-db set <key> <value>
+            \\  bedrock-db get <key>
+            \\
+        , .{});
+        return;
+    }
+    const file = try std.Io.Dir.cwd().createFile(io, "data.db", .{ .truncate = false, .read = true });
     defer file.close(io);
 
-    try set(io, file, key, value);
-    std.debug.print("Successfully Stored key-value in Database\n", .{});
+    const command = args[1];
+    if (std.mem.eql(u8, command, "set")) {
+        if (args.len < 4) {
+            std.debug.print("Error: 'set' requires <key> and <value>\n", .{});
+            return;
+        }
+
+        try set(io, file, args[2], args[3]);
+        std.debug.print("[OK] Stored '{s}' = '{s}'\n", .{ args[2], args[3] });
+    } else if (std.mem.eql(u8, command, "get")) {
+        if (args.len < 3) {
+            std.debug.print("Error: 'get' requires <key>\n", .{});
+            return;
+        }
+        const val = try get(io, file, args[2], allocator);
+
+        if (val) |v| {
+            std.debug.print("[FOUND] {s} = {s}\n", .{ args[2], v });
+        } else {
+            std.debug.print("[NOT FOUND] Key '{s}' does not exist\n", .{args[2]});
+        }
+    } else {
+        std.debug.print("Unknown command: '{s}'. Use 'set' or 'get'.\n", .{command});
+    }
 }
 
 test "set writes record to disk" {

@@ -34,12 +34,16 @@ fn get(io: std.Io, file: std.Io.File, key: []const u8, allocator: std.mem.Alloca
     var file_reader = file.reader(io, &read_buf);
 
     try file_reader.seekTo(0);
+    var latest_val: ?[]u8 = null;
 
     while (true) {
         var header: Header = undefined;
-        try file_reader.interface.readSliceAll(std.mem.asBytes(&header));
+        file_reader.interface.readSliceAll(std.mem.asBytes(&header)) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
 
-        if (header.magic != MAGIC) {
+        if (!std.mem.eql(u8, &header.magic, &MAGIC)) {
             return error.InvalidHeader;
         }
 
@@ -48,13 +52,17 @@ fn get(io: std.Io, file: std.Io.File, key: []const u8, allocator: std.mem.Alloca
         try file_reader.interface.readSliceAll(key_slice);
 
         if (std.mem.eql(u8, key, key_slice)) {
+            if (latest_val) |old| allocator.free(old);
             const value_buf = try allocator.alloc(u8, header.value_len);
+
             try file_reader.interface.readSliceAll(value_buf);
-            return value_buf;
+            latest_val = value_buf;
         } else {
-            try file_reader.seekTo(header.value_len);
+            _ = try file_reader.interface.discard(.limited(header.value_len));
         }
     }
+
+    return latest_val;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -87,16 +95,32 @@ test "get reads record from disk" {
     const file = try std.Io.Dir.cwd().createFile(io, "test_get.db", .{ .truncate = false, .read = true });
     defer file.close(io);
     defer std.Io.Dir.cwd().deleteFile(io, "test_get.db") catch {};
-    try set(io, file, "hello", "world");
+    try set(io, file, "user", "chish");
+    try set(io, file, "user", "chish1");
 
     const allocator = std.testing.allocator;
-    const value_get = try get(io, file, "hello", allocator);
+    const value_get = try get(io, file, "user", allocator);
 
     if (value_get) |s| {
         defer allocator.free(s);
 
-        try std.testing.expectEqualStrings("world", s);
+        try std.testing.expectEqualStrings("chish1", s);
     } else {
         return error.ExpectedValueGotNull;
     }
+}
+
+test "returns null if no key found" {
+    const io = std.testing.io;
+
+    const file = try std.Io.Dir.cwd().createFile(io, "test_failed_get.db", .{ .truncate = false, .read = true });
+    defer file.close(io);
+    defer std.Io.Dir.cwd().deleteFile(io, "test_failed_get.db") catch {};
+    try set(io, file, "user", "chish");
+    try set(io, file, "user", "chish1");
+
+    const allocator = std.testing.allocator;
+    const value_get = try get(io, file, "hello", allocator);
+
+    try std.testing.expectEqual(@as(?[]u8, null), value_get);
 }

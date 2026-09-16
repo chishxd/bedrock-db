@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const MAGIC: [4]u8 = "BDRK".*;
+pub const MAGIC: [4]u8 = "BDRK".*;
 
 /// Fixed-sized Header to Identify DB data from blob
-const Header = extern struct {
+pub const Header = extern struct {
     ///Identifier to know about Struct
     magic: [4]u8,
     /// Length of the key in DB
@@ -13,7 +13,7 @@ const Header = extern struct {
 };
 
 ///set functions stores the binary payload passed with key and value with a Header to identify the value
-fn set(io: std.Io, file: std.Io.File, key: []const u8, value: []const u8) !void {
+pub fn set(io: std.Io, file: std.Io.File, key: []const u8, value: []const u8) !void {
     const header = Header{ .magic = MAGIC, .key_len = @intCast(key.len), .value_len = @intCast(value.len) };
     //Initializing buffer to write into the file
     var buffer: [1024]u8 = undefined;

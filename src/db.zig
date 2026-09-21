@@ -87,6 +87,14 @@ pub const BedrockDB = struct {
         self.arena.deinit();
     }
 
+    /// Writes Key, Value pair to file and updates the index HashMap with a new IndexEntry
+    ///
+    /// # Arguments:
+    /// * `key` ([]const u8) : String value of a key to store
+    /// * `value` ([]const u8) : String value of a value to store
+    ///
+    /// # Returns:
+    /// It returns nothing on success, but error on failure.
     pub fn set(self: *BedrockDB, key: []const u8, value: []const u8) !void {
         const header = main.Header{ .magic = main.MAGIC, .key_len = @intCast(key.len), .value_len = @intCast(value.len) };
         const record_offset = try self.file.length(self.io);
@@ -113,6 +121,30 @@ pub const BedrockDB = struct {
         const key_copy = try allocator.dupe(u8, key);
 
         try self.index.put(self.arena.allocator(), key_copy, index_entry);
+    }
+
+    /// Returns the latest value stored with the key or null
+    ///
+    /// key ([]const u8) : String value to fetch value for
+    ///
+    /// # Returns:
+    /// 1. String key ([]u8) if key is present
+    /// 2. Null if key is not present
+    /// 3. Error on errors, I don't throw any errors, all of them are propagated
+    /// and will be printed, ig
+    pub fn get(self: *BedrockDB, key: []const u8, allocator: std.mem.Allocator) !?[]u8 {
+        const entry = self.index.get(key) orelse return null;
+
+        var read_buf: [1024]u8 = undefined;
+        var file_reader = self.file.reader(self.io, &read_buf);
+
+        try file_reader.seekTo(entry.value_offset);
+
+        const val_buf = try allocator.alloc(u8, entry.value_len);
+
+        try file_reader.interface.readSliceAll(val_buf);
+
+        return val_buf;
     }
 };
 
@@ -152,4 +184,48 @@ test "set writes record to disk" {
 
     const file_length = try db.file.length(io);
     try std.testing.expectEqual(@as(u64, 22), file_length);
+    try std.testing.expectEqual(@as(u32, 1), db.index.size);
+}
+test "get reads record from disk" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var db = try BedrockDB.init(io, "test_set.db");
+    defer db.deinit();
+    defer std.Io.Dir.cwd().deleteFile(io, "test_set.db") catch {};
+    try db.set("hello", "world");
+    try db.set("hero", "singham");
+    try db.set("bhondu", "yash");
+    try db.set("hero", "spidy");
+
+    const result_bhondu = try db.get("bhondu", allocator);
+    const result_hero = try db.get("hero", allocator);
+    if (result_hero) |val| {
+        defer std.testing.allocator.free(val);
+        try std.testing.expectEqualStrings("spidy", val);
+    }
+
+    if (result_bhondu) |val| {
+        defer std.testing.allocator.free(val);
+        try std.testing.expectEqualStrings("yash", val);
+    }
+}
+
+test "get returns null if no record found" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var db = try BedrockDB.init(io, "test_set.db");
+    defer db.deinit();
+    defer std.Io.Dir.cwd().deleteFile(io, "test_set.db") catch {};
+    try db.set("hello", "world");
+    try db.set("hero", "singham");
+    try db.set("bhondu", "yash");
+    try db.set("hero", "spidy");
+
+    const is_null = try db.get("villain", allocator);
+    if (is_null) |val| {
+        defer std.testing.allocator.free(val);
+        try std.testing.expectEqual(null, val);
+    }
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const BedrockDB = @import("db.zig").BedrockDB;
 
 pub const MAGIC: [4]u8 = "BDRK".*;
 
@@ -12,60 +13,6 @@ pub const Header = extern struct {
     value_len: u32,
 };
 
-///set functions stores the binary payload passed with key and value with a Header to identify the value
-pub fn set(io: std.Io, file: std.Io.File, key: []const u8, value: []const u8) !void {
-    const header = Header{ .magic = MAGIC, .key_len = @intCast(key.len), .value_len = @intCast(value.len) };
-    //Initializing buffer to write into the file
-    var buffer: [1024]u8 = undefined;
-    var file_writer = file.writer(io, &buffer);
-
-    //This line makes sure the code won't rewrite on the file and will be append-only
-    try file_writer.seekTo(try file.length(io));
-
-    try file_writer.interface.writeAll(std.mem.asBytes(&header));
-    try file_writer.interface.writeAll(key);
-    try file_writer.interface.writeAll(value);
-
-    try file_writer.flush();
-}
-
-/// get function returns the value for the passed key as a string.
-fn get(io: std.Io, file: std.Io.File, key: []const u8, allocator: std.mem.Allocator) !?[]u8 {
-    var read_buf: [1024]u8 = undefined;
-    var file_reader = file.reader(io, &read_buf);
-
-    try file_reader.seekTo(0);
-    var latest_val: ?[]u8 = null;
-
-    while (true) {
-        var header: Header = undefined;
-        file_reader.interface.readSliceAll(std.mem.asBytes(&header)) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => |e| return e,
-        };
-
-        if (!std.mem.eql(u8, &header.magic, &MAGIC)) {
-            return error.InvalidHeader;
-        }
-
-        var key_buf: [256]u8 = undefined;
-        const key_slice = key_buf[0..header.key_len];
-        try file_reader.interface.readSliceAll(key_slice);
-
-        if (std.mem.eql(u8, key, key_slice)) {
-            if (latest_val) |old| allocator.free(old);
-            const value_buf = try allocator.alloc(u8, header.value_len);
-
-            try file_reader.interface.readSliceAll(value_buf);
-            latest_val = value_buf;
-        } else {
-            _ = try file_reader.interface.discard(.limited(header.value_len));
-        }
-    }
-
-    return latest_val;
-}
-
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
@@ -77,12 +24,13 @@ pub fn main(init: std.process.Init) !void {
             \\Usage:
             \\  bedrock-db set <key> <value>
             \\  bedrock-db get <key>
+            \\  bedrock-db del <key>
             \\
         , .{});
         return;
     }
-    const file = try std.Io.Dir.cwd().createFile(io, "data.db", .{ .truncate = false, .read = true });
-    defer file.close(io);
+    var db = try BedrockDB.init(io, "data-prod.db");
+    defer db.deinit();
 
     const command = args[1];
     if (std.mem.eql(u8, command, "set")) {
@@ -91,69 +39,78 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
 
-        try set(io, file, args[2], args[3]);
+        try db.set(args[2], args[3]);
         std.debug.print("[OK] Stored '{s}' = '{s}'\n", .{ args[2], args[3] });
     } else if (std.mem.eql(u8, command, "get")) {
         if (args.len < 3) {
             std.debug.print("Error: 'get' requires <key>\n", .{});
             return;
         }
-        const val = try get(io, file, args[2], allocator);
+        const val = try db.get(args[2], allocator);
 
         if (val) |v| {
             std.debug.print("[FOUND] {s} = {s}\n", .{ args[2], v });
         } else {
             std.debug.print("[NOT FOUND] Key '{s}' does not exist\n", .{args[2]});
         }
+    } else if (std.mem.eql(u8, command, "del")) {
+        if (args.len < 3) {
+            std.debug.print("Error: 'del' requires <key>\n", .{});
+            return;
+        }
+        try db.delete(args[2]);
+        std.debug.print("[DELETED] Key '{s}' removed\n", .{args[2]});
     } else {
         std.debug.print("Unknown command: '{s}'. Use 'set' or 'get'.\n", .{command});
     }
 }
 
-test "set writes record to disk" {
+test "Integration: Test full database lifecycle" {
     const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    var db1 = try BedrockDB.init(io, "test_db.db");
 
-    const file = try std.Io.Dir.cwd().createFile(io, "test_db.db", .{ .truncate = false });
-    defer file.close(io);
+    try db1.set("editor", "nvim");
+    try db1.set("bhondu", "yash");
+    try db1.set("goat", "quanti");
+    try db1.set("hero", "spidy");
+    try db1.set("villain", "venom");
+
+    try db1.set("villain", "doc ock");
+    try db1.set("hero", "deadpool");
+
+    try db1.delete("editor");
+
+    db1.deinit();
+
+    var db2 = try BedrockDB.init(io, "test_db.db");
     defer std.Io.Dir.cwd().deleteFile(io, "test_db.db") catch {};
-    try set(io, file, "hello", "world");
+    defer db2.deinit();
 
-    const file_len = try file.length(io);
-    try std.testing.expectEqual(@as(u64, 22), file_len);
-}
+    const editor = try db2.get("editor", allocator);
+    try std.testing.expectEqual(null, editor);
 
-test "get reads record from disk" {
-    const io = std.testing.io;
-
-    const file = try std.Io.Dir.cwd().createFile(io, "test_get.db", .{ .truncate = false, .read = true });
-    defer file.close(io);
-    defer std.Io.Dir.cwd().deleteFile(io, "test_get.db") catch {};
-    try set(io, file, "user", "chish");
-    try set(io, file, "user", "chish1");
-
-    const allocator = std.testing.allocator;
-    const value_get = try get(io, file, "user", allocator);
-
-    if (value_get) |s| {
-        defer allocator.free(s);
-
-        try std.testing.expectEqualStrings("chish1", s);
-    } else {
-        return error.ExpectedValueGotNull;
+    const bhondu = try db2.get("bhondu", allocator);
+    if (bhondu) |val| {
+        defer allocator.free(val);
+        try std.testing.expectEqualStrings("yash", val);
     }
-}
 
-test "returns null if no key found" {
-    const io = std.testing.io;
+    const goat = try db2.get("goat", allocator);
+    if (goat) |val| {
+        defer allocator.free(val);
+        try std.testing.expectEqualStrings("quanti", val);
+    }
 
-    const file = try std.Io.Dir.cwd().createFile(io, "test_failed_get.db", .{ .truncate = false, .read = true });
-    defer file.close(io);
-    defer std.Io.Dir.cwd().deleteFile(io, "test_failed_get.db") catch {};
-    try set(io, file, "user", "chish");
-    try set(io, file, "user", "chish1");
+    const hero = try db2.get("hero", allocator);
+    if (hero) |val| {
+        defer allocator.free(val);
+        try std.testing.expectEqualStrings("deadpool", val);
+    }
 
-    const allocator = std.testing.allocator;
-    const value_get = try get(io, file, "hello", allocator);
-
-    try std.testing.expectEqual(@as(?[]u8, null), value_get);
+    const villain = try db2.get("villain", allocator);
+    if (villain) |val| {
+        defer allocator.free(val);
+        try std.testing.expectEqualStrings("doc ock", val);
+    }
 }

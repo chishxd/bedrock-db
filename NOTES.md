@@ -33,8 +33,27 @@ and return null if key was never in the HashMap.
 HEHEHEHE This is all so fun.. And I am NOT using any AI to make this work, which
 makes every small step much more rewarding.
 
-## 2. Better deletions
+## 2. Better deletions (DONE)
 
 So.. Right now you can't really "Delete" any fields, So maybe I could, just update
 that field to have value_len 0, Yeah it still wastes some bytes.. I could find a fix for
 it in future
+
+### What I ended up doing:
+
+I added new method to BedrockDB, currently all the functions are in a single file,
+So, the thing I do which "deletes" the value for UX is by removing the pair from
+Index HashMap and creating a "Tombstone" in actual file, which will annotate the deletion
+of the value. So the tombstone is nothing but the regular Header, key and val-
+wait, value length is 0 in header! Yeah that's right. I was thinking how would I let
+program know that the key is actually deleted, so I store the Header and key as regularly do,
+but instead of storing value, I change key_len in Header to be 0 and never write a key
+The `header.key_len` let's me detect the tombstone and skip it.
+
+### So, what's next?
+
+Imma add CLI option for delete for now.. Let's see, if I should make a print Table
+type of output in CLI, for better UX. Or work on core behaviour, like I was thinking
+that maybe I could write a compaction method which will rewrite the file by omitting
+all the tombstone values completely, like only based on HashMap, so we won't have tombstones
+neither would we have previously added value which was later deleted.

@@ -183,23 +183,6 @@ test "test init boots on clean file" {
     try std.testing.expectEqual(0, db.index.count());
 }
 
-test "test init builds index from exisiting file" {
-    const file = try std.Io.Dir.cwd().createFile(std.testing.io, "create_db.db", .{
-        .truncate = false,
-        .read = true,
-    });
-    defer file.close(std.testing.io);
-    try main.set(std.testing.io, file, "user", "chish");
-    try main.set(std.testing.io, file, "editor", "nvim");
-    try main.set(std.testing.io, file, "os", "linux");
-
-    var db = try BedrockDB.init(std.testing.io, "create_db.db");
-    defer db.deinit();
-    defer std.Io.Dir.cwd().deleteFile(std.testing.io, "create_db.db") catch {};
-
-    try std.testing.expectEqual(3, db.index.count());
-}
-
 test "set writes record to disk" {
     const io = std.testing.io;
 

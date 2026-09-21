@@ -16,7 +16,7 @@ pub const BedrockDB = struct {
     arena: std.heap.ArenaAllocator,
     index: std.StringHashMapUnmanaged(IndexEntry),
     io: std.Io,
-
+    path: []const u8,
     ///Initializes Database with provided I/O context and db file path
     ///
     ///The `io` is used to create and read file
@@ -37,10 +37,35 @@ pub const BedrockDB = struct {
         });
 
         var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-        var index: std.StringHashMapUnmanaged(IndexEntry) = .{};
+        const path_copy = try arena.allocator().dupe(u8, path);
 
+        var db = BedrockDB{
+            .file = file,
+            .arena = arena,
+            .index = .{},
+            .io = io,
+            .path = path_copy,
+        };
+
+        try db.buildIndex();
+
+        return db;
+    }
+
+    fn writeRecord(writer: anytype, key: []const u8, value: []const u8) !void {
+        var header = main.Header{
+            .magic = main.MAGIC,
+            .key_len = @intCast(key.len),
+            .value_len = @intCast(value.len),
+        };
+
+        try writer.writeAll(std.mem.asBytes(&header));
+        try writer.writeAll(key);
+        try writer.writeAll(value);
+    }
+    pub fn buildIndex(self: *BedrockDB) !void {
         var read_buf: [1024]u8 = undefined;
-        var file_reader = file.reader(io, &read_buf);
+        var file_reader = self.file.reader(self.io, &read_buf);
 
         var current_offset: u64 = 0;
         while (true) {
@@ -61,7 +86,7 @@ pub const BedrockDB = struct {
             //Check if the value is a deleted value, I read that it is also called a "tombstone"
             //And yeah let's call it that
             if (header.value_len == 0) {
-                _ = index.remove(key_slice);
+                _ = self.index.remove(key_slice);
                 current_offset += @sizeOf(main.Header) + header.key_len;
                 continue;
             }
@@ -71,22 +96,15 @@ pub const BedrockDB = struct {
                 .value_len = header.value_len,
             };
 
-            var allocator = arena.allocator();
+            var allocator = self.arena.allocator();
             const key_copy = try allocator.dupe(u8, key_slice);
 
-            try index.put(allocator, key_copy, index_entry);
+            try self.index.put(allocator, key_copy, index_entry);
 
             current_offset += @sizeOf(main.Header) + header.key_len + header.value_len;
 
             _ = try file_reader.interface.discard(.limited(header.value_len));
         }
-
-        return .{
-            .file = file,
-            .arena = arena,
-            .index = index,
-            .io = io,
-        };
     }
 
     /// Deinitializes resources used up by application
@@ -104,24 +122,20 @@ pub const BedrockDB = struct {
     /// # Returns:
     /// It returns nothing on success, but error on failure.
     pub fn set(self: *BedrockDB, key: []const u8, value: []const u8) !void {
-        const header = main.Header{ .magic = main.MAGIC, .key_len = @intCast(key.len), .value_len = @intCast(value.len) };
         const record_offset = try self.file.length(self.io);
-        const val_offset = record_offset + @sizeOf(main.Header) + header.key_len;
+        const val_offset = record_offset + @sizeOf(main.Header) + key.len;
 
         //Initializing buffer to write into the file
         var buffer: [1024]u8 = undefined;
         var file_writer = self.file.writer(self.io, &buffer);
-
         try file_writer.seekTo(record_offset);
 
-        try file_writer.interface.writeAll(std.mem.asBytes(&header));
-        try file_writer.interface.writeAll(key);
-        try file_writer.interface.writeAll(value);
+        try writeRecord(&file_writer.interface, key, value);
 
         try file_writer.flush();
 
         const index_entry = IndexEntry{
-            .value_len = @intCast(header.value_len),
+            .value_len = @intCast(value.len),
             .value_offset = @intCast(val_offset),
         };
 
@@ -155,8 +169,8 @@ pub const BedrockDB = struct {
         return val_buf;
     }
 
+    ///Delete specified key from the index and place a tombstone in Database
     pub fn delete(self: *BedrockDB, key: []const u8) !void {
-        const header = main.Header{ .magic = main.MAGIC, .key_len = @intCast(key.len), .value_len = 0 };
         const record_offset = try self.file.length(self.io);
 
         //Initializing buffer to write into the file
@@ -165,12 +179,50 @@ pub const BedrockDB = struct {
 
         try file_writer.seekTo(record_offset);
 
-        try file_writer.interface.writeAll(std.mem.asBytes(&header));
-        try file_writer.interface.writeAll(key);
-
+        try writeRecord(&file_writer.interface, key, "");
         try file_writer.flush();
 
         _ = self.index.remove(key);
+    }
+
+    pub fn compact(self: *BedrockDB) !void {
+        const cwd = std.Io.Dir.cwd();
+        var file = try cwd.createFile(self.io, "data.db.compact", .{});
+
+        var write_buf: [1024]u8 = undefined;
+        var file_writer = file.writer(self.io, &write_buf);
+
+        var it = self.index.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+
+            var read_buf: [1024]u8 = undefined;
+            var file_reader = self.file.reader(self.io, &read_buf);
+
+            try file_reader.seekTo(entry.value_ptr.value_offset);
+
+            var val_buf: [1024]u8 = undefined;
+            const val_slice = val_buf[0..entry.value_ptr.value_len];
+            try file_reader.interface.readSliceAll(val_slice);
+
+            try writeRecord(&file_writer.interface, key, val_slice);
+            try file_writer.flush();
+        }
+
+        file.close(self.io);
+        self.file.close(self.io);
+        try cwd.rename("data.db.compact", cwd, self.path, self.io);
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const saved_path = path_buf[0..self.path.len];
+        @memcpy(saved_path, self.path);
+
+        _ = self.arena.reset(.retain_capacity);
+        self.index = .{};
+        self.path = try self.arena.allocator().dupe(u8, saved_path);
+
+        self.file = try cwd.createFile(self.io, self.path, .{ .truncate = false, .read = true });
+        try self.buildIndex();
     }
 };
 
@@ -260,4 +312,36 @@ test "delete persists across reboot" {
         defer allocator.free(r);
         try std.testing.expectEqualStrings("quanti", r);
     }
+}
+
+test "compaction shrinks file and preserves active keys" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var db = try BedrockDB.init(io, "test_compact.db");
+    defer db.deinit();
+    defer std.Io.Dir.cwd().deleteFile(io, "test_compact.db") catch {};
+
+    try db.set("hero", "goku");
+    try db.set("hero", "spidy");
+    try db.set("hero", "Iron Man");
+    try db.set("place", "earth");
+    try db.delete("place");
+
+    const bloated_size = try db.file.length(io);
+
+    try db.compact();
+
+    const compact_size = try db.file.length(io);
+
+    try std.testing.expect(compact_size < bloated_size);
+
+    const hero = try db.get("hero", allocator);
+    if (hero) |h| {
+        defer allocator.free(h);
+        try std.testing.expectEqualStrings("Iron Man", h);
+    }
+
+    const rival = try db.get("rival", allocator);
+    try std.testing.expect(rival == null);
 }

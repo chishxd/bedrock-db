@@ -58,6 +58,14 @@ pub const BedrockDB = struct {
             const key_slice = key_buf[0..header.key_len];
             try file_reader.interface.readSliceAll(key_slice);
 
+            //Check if the value is a deleted value, I read that it is also called a "tombstone"
+            //And yeah let's call it that
+            if (header.value_len == 0) {
+                _ = index.remove(key_slice);
+                current_offset += @sizeOf(main.Header) + header.key_len;
+                continue;
+            }
+
             const index_entry = IndexEntry{
                 .value_offset = current_offset + @sizeOf(main.Header) + header.key_len,
                 .value_len = header.value_len,
@@ -146,6 +154,24 @@ pub const BedrockDB = struct {
 
         return val_buf;
     }
+
+    pub fn delete(self: *BedrockDB, key: []const u8) !void {
+        const header = main.Header{ .magic = main.MAGIC, .key_len = @intCast(key.len), .value_len = 0 };
+        const record_offset = try self.file.length(self.io);
+
+        //Initializing buffer to write into the file
+        var buffer: [1024]u8 = undefined;
+        var file_writer = self.file.writer(self.io, &buffer);
+
+        try file_writer.seekTo(record_offset);
+
+        try file_writer.interface.writeAll(std.mem.asBytes(&header));
+        try file_writer.interface.writeAll(key);
+
+        try file_writer.flush();
+
+        _ = self.index.remove(key);
+    }
 };
 
 test "test init boots on clean file" {
@@ -227,5 +253,28 @@ test "get returns null if no record found" {
     if (is_null) |val| {
         defer std.testing.allocator.free(val);
         try std.testing.expectEqual(null, val);
+    }
+}
+
+test "delete persists across reboot" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var db1 = try BedrockDB.init(io, "test_del.db");
+    defer std.Io.Dir.cwd().deleteFile(io, "test_del.db") catch {};
+
+    try db1.set("hero", "spidy");
+    try db1.set("rival", "quanti");
+    try db1.delete("hero");
+    db1.deinit(); //Power off the DB
+
+    var db2 = try BedrockDB.init(io, "test_del.db");
+    const hero = try db2.get("hero", allocator);
+    try std.testing.expect(hero == null);
+
+    const rival = try db2.get("rival", allocator);
+    if (rival) |r| {
+        defer allocator.free(r);
+        try std.testing.expectEqualStrings("quanti", r);
     }
 }

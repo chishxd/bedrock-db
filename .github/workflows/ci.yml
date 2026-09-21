@@ -1,4 +1,4 @@
-name: CI & Releases
+name: CI & Release
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
     name: Test & Lint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Zig Compiler

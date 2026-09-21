@@ -1,0 +1,74 @@
+name: CI & Releases
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: master
+
+      - name: Verify Code Formatting
+        run: zig fmt --check src/
+
+      - name: Run Engine Unit Tests
+        run: zig test src/db.zig
+
+      - name: Run Lifecycle Integration Tests
+        run: zig test src/main.zig
+
+  release:
+    name: Build & Publish Release Binaries
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-linux-musl
+            name: bedrock-db-linux-x86_64
+          - target: aarch64-macos
+            name: bedrock-db-macos-arm64
+          - target: x86_64-macos
+            name: bedrock-db-macos-x86_64
+          - target: x86_64-windows
+            name: bedrock-db-windows-x86_64.exe
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: master
+
+      - name: Build Binary for ${{ matrix.target }}
+        run: |
+          zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast
+          mkdir -p dist
+          if [ -f zig-out/bin/bedrock-db.exe ]; then
+            cp zig-out/bin/bedrock-db.exe dist/${{ matrix.name }}
+          else
+            cp zig-out/bin/bedrock-db dist/${{ matrix.name }}
+          fi
+
+      - name: Upload Binary to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

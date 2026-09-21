@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
             \\  bedrock-db set <key> <value>
             \\  bedrock-db get <key>
             \\  bedrock-db del <key>
-            \\
+            \\  bedrock-db compact
         , .{});
         return;
     }
@@ -60,6 +60,9 @@ pub fn main(init: std.process.Init) !void {
         }
         try db.delete(args[2]);
         std.debug.print("[DELETED] Key '{s}' removed\n", .{args[2]});
+    } else if (std.mem.eql(u8, command, "compact")) {
+        try db.compact();
+        std.debug.print("[OK] Database compacted successfully\n", .{});
     } else {
         std.debug.print("Unknown command: '{s}'. Use 'set' or 'get'.\n", .{command});
     }

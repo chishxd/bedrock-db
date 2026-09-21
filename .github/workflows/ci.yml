@@ -51,10 +51,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v1
+      - name: Setup Zig Compiler
+        uses: mlugg/setup-zig@v2.2.1
         with:
-          version: master
+          version: 0.16.0
 
       - name: Build Binary for ${{ matrix.target }}
         run: |

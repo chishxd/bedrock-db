@@ -9,6 +9,10 @@ const IndexEntry = struct {
     value_len: u32,
 };
 
+/// Real key will never get close to this,
+/// it exists so corrupted headers fail with a clear error
+const MAX_KEY_LEN: u32 = 65536;
+
 ///The real app state, holds everything important like DB file handle,
 ///arena allocator, index hashmap, and Io context
 pub const BedrockDB = struct {
@@ -79,9 +83,19 @@ pub const BedrockDB = struct {
                 return error.InvalidHeader;
             }
 
-            var key_buf: [256]u8 = undefined;
-            const key_slice = key_buf[0..header.key_len];
-            try file_reader.interface.readSliceAll(key_slice);
+            if (header.key_len > MAX_KEY_LEN) {
+                return error.KeyTooLong;
+            }
+
+            const key_slice = try std.heap.page_allocator.alloc(u8, header.key_len);
+            defer std.heap.page_allocator.free(key_slice);
+
+            file_reader.interface.readSliceAll(key_slice) catch |err| switch (err) {
+                // Header was written but key bytes weren't (crash, power loss),
+                //  so stop here instead of failing init() for the whole file
+                error.EndOfStream => break,
+                else => |e| return e,
+            };
 
             //Check if the value is a deleted value, I read that it is also called a "tombstone"
             //And yeah let's call it that
@@ -99,11 +113,33 @@ pub const BedrockDB = struct {
             var allocator = self.arena.allocator();
             const key_copy = try allocator.dupe(u8, key_slice);
 
-            try self.index.put(allocator, key_copy, index_entry);
-
             current_offset += @sizeOf(main.Header) + header.key_len + header.value_len;
 
-            _ = try file_reader.interface.discard(.limited(header.value_len));
+            // Discard the unuseable value bytes,
+            //  header + key made it but value bytes weren't (crash, power loss),
+            //  so stop here instead of failing init() for the whole file
+            var verify_buf: [4096]u8 = undefined;
+            var remaining: u32 = header.value_len;
+            var torn_value = false;
+
+            // Copy value from reader to writer in chunks instead
+            //  of slicing a fixed 1024-byte buffer as that panicked
+            //  on any slice over 1024 bytes
+            while (remaining > 0) {
+                const chunk_len = @min(remaining, verify_buf.len);
+                const chunk = verify_buf[0..chunk_len];
+                file_reader.interface.readSliceAll(chunk) catch |err| switch (err) {
+                    error.EndOfStream => {
+                        torn_value = true;
+                        break;
+                    },
+                    else => |e| return e,
+                };
+                remaining -= chunk_len;
+            }
+            if (torn_value) break;
+
+            try self.index.put(allocator, key_copy, index_entry);
         }
     }
 
@@ -195,18 +231,37 @@ pub const BedrockDB = struct {
         var it = self.index.iterator();
         while (it.next()) |entry| {
             const key = entry.key_ptr.*;
+            const value_len = entry.value_ptr.value_len;
+
+            // Write header and key before writing as we
+            //  already know value_len
+            var header = main.Header{
+                .magic = main.MAGIC,
+                .key_len = @intCast(key.len),
+                .value_len = value_len,
+            };
+            try file_writer.interface.writeAll(std.mem.asBytes(&header));
+            try file_writer.interface.writeAll(key);
 
             var read_buf: [1024]u8 = undefined;
             var file_reader = self.file.reader(self.io, &read_buf);
-
             try file_reader.seekTo(entry.value_ptr.value_offset);
 
-            var val_buf: [1024]u8 = undefined;
-            const val_slice = val_buf[0..entry.value_ptr.value_len];
-            try file_reader.interface.readSliceAll(val_slice);
+            var copy_buf: [4096]u8 = undefined;
+            var remaining: u32 = value_len;
 
-            try writeRecord(&file_writer.interface, key, val_slice);
-            try file_writer.flush();
+            // Copy value from reader to writer in chunks instead
+            //  of slicing a fixed 1024-byte buffer as that panicked
+            //  on any slice over 1024 bytes
+            while (remaining > 0) {
+                const chunk_len = @min(remaining, copy_buf.len);
+                const chunk = copy_buf[0..chunk_len];
+                try file_reader.interface.readSliceAll(chunk);
+                try file_writer.interface.writeAll(chunk);
+                remaining -= chunk_len;
+            }
+
+            try file_writer.interface.flush();
         }
 
         file.close(self.io);
@@ -344,4 +399,59 @@ test "compaction shrinks file and preserves active keys" {
 
     const rival = try db.get("rival", allocator);
     try std.testing.expect(rival == null);
+}
+
+test "buildIndex handles keys larger than the old 256-byte stack buffer" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var big_key_buf: [300]u8 = undefined;
+    @memset(&big_key_buf, 'a');
+    const big_key = big_key_buf[0..];
+
+    var db1 = try BedrockDB.init(io, "test_big_key.db");
+    defer std.Io.Dir.cwd().deleteFile(io, "test_big_key.db") catch {};
+
+    try db1.set(big_key, "andie");
+    db1.deinit();
+
+    // Reopening re-run buildIndex(), before the fix this panicked with
+    //  "index out of bounds: index 257, len 256"
+    var db2 = try BedrockDB.init(io, "test_big_key.db");
+    defer db2.deinit();
+
+    const val = try db2.get(big_key, allocator);
+    if (val) |v| {
+        defer allocator.free(v);
+        try std.testing.expectEqualStrings("andie", v);
+    } else {
+        try std.testing.expect(false);
+    }
+}
+
+test "compact handles values larger than the old 1024-byte stack buffer" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+
+    var db = try BedrockDB.init(io, "test_bigval.db");
+    defer db.deinit();
+    defer std.Io.Dir.cwd().deleteFile(io, "test_bigval.db") catch {};
+
+    var big_val_buf: [2000]u8 = undefined;
+    @memset(&big_val_buf, 'a');
+    const big_val = big_val_buf[0..];
+
+    try db.set("bigkey", big_val);
+
+    // Before this panicked with
+    //  "index out of bounds: index 257, len 256"
+    try db.compact();
+
+    const val = try db.get("bigkey", allocator);
+    if (val) |v| {
+        defer allocator.free(v);
+        try std.testing.expectEqualStrings(big_val, v);
+    } else {
+        try std.testing.expect(false);
+    }
 }

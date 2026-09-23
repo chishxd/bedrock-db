@@ -73,6 +73,10 @@ pub const BedrockDB = struct {
 
         var current_offset: u64 = 0;
         while (true) {
+            // Remember where this record started so a torn tail can be truncated
+            //  from here
+            const record_start_offset = current_offset;
+
             var header: main.Header = undefined;
             file_reader.interface.readSliceAll(std.mem.asBytes(&header)) catch |err| switch (err) {
                 error.EndOfStream => break,
@@ -93,7 +97,10 @@ pub const BedrockDB = struct {
             file_reader.interface.readSliceAll(key_slice) catch |err| switch (err) {
                 // Header was written but key bytes weren't (crash, power loss),
                 //  so stop here instead of failing init() for the whole file
-                error.EndOfStream => break,
+                error.EndOfStream => {
+                    try self.file.setLength(self.io, record_start_offset);
+                    break;
+                },
                 else => |e| return e,
             };
 
@@ -137,7 +144,10 @@ pub const BedrockDB = struct {
                 };
                 remaining -= chunk_len;
             }
-            if (torn_value) break;
+            if (torn_value) {
+                try self.file.setLength(self.io, record_start_offset);
+                break;
+            }
 
             try self.index.put(allocator, key_copy, index_entry);
         }
@@ -416,7 +426,7 @@ test "buildIndex handles keys larger than the old 256-byte stack buffer" {
     db1.deinit();
 
     // Reopening re-run buildIndex(), before the fix this panicked with
-    //  "index out of bounds: index 257, len 256"
+    //  "index out of bounds: index 300, len 256"
     var db2 = try BedrockDB.init(io, "test_big_key.db");
     defer db2.deinit();
 
@@ -444,7 +454,7 @@ test "compact handles values larger than the old 1024-byte stack buffer" {
     try db.set("bigkey", big_val);
 
     // Before this panicked with
-    //  "index out of bounds: index 257, len 256"
+    //  "index out of bounds: index 2000, len 1024"
     try db.compact();
 
     const val = try db.get("bigkey", allocator);

@@ -4,6 +4,7 @@ const BedrockDB = @import("db.zig").BedrockDB;
 pub const MAGIC: [4]u8 = "BDRK".*;
 
 /// Fixed-sized Header to Identify DB data from blob
+/// No checksum in header so bit-corruption can't be detected
 pub const Header = extern struct {
     ///Identifier to know about Struct
     magic: [4]u8,

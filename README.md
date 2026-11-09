@@ -11,7 +11,7 @@ Uses a Bitcask-style in-memory hash index for O(1) disk lookups.
 
 ## Features
 
-- Written purely with Zig 0.16 STD Library
+-  Written purely with Zig 0.16 STD Library
 -  Key offsets are indexed in a RAM Hash Map on startup, allowing direct single-read disk fetches on `get()`.
 -  Keys in RAM live inside a dedicated Arena Allocator, which will clear all memory at once rather than in loops-- which can also cause memory fragmentation
 -  Deletes append a tombstone record to preserve append-only values while purging keys from RAM.
@@ -95,3 +95,7 @@ You will see the raw `BDRK` header and your keys/values directly on disk.
 zig test src/db.zig
 zig test src/main.zig
 ```
+---
+
+Made with DETERMINATION by @Chish
+Licensed with [MIT](LICENSE)

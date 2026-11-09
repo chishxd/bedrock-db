@@ -10,12 +10,12 @@ Built without external dependencies, frameworks, or hidden allocations. Uses a B
 
 ## Features
 
-- **Zero External Dependencies:** Built purely on the Zig 0.16 standard library.
-- **$O(1)$ In-Memory Index (Bitcask Style):** Key offsets are indexed in a RAM Hash Map on startup, allowing direct single-read disk fetches on `get()`.
-- **Arena-Backed Memory:** Keys in RAM live inside a dedicated Arena Allocator, eliminating memory fragmentation and wiping all index memory simultaneously on shutdown.
-- **Tombstone Deletions:** Deletes append a zero-value tombstone record to preserve append-only invariants while purging keys from RAM.
-- **Log Compaction:** A `compact()` routine reclaims disk space by rewriting only live records to a fresh file and atomically replacing the bloated log.
-- **Full Test Suite:** 7 automated tests verifying end-to-end lifecycle, reboots, tombstone persistence, and zero memory leaks. (Well, I jst tried using this new approach where I would write tests for what I expect and make my code work around it, and it helped me build a lot of logic, and I get professional looking tests, so it's a win-win)
+- Written purely with Zig 0.16 STD Library
+-  Key offsets are indexed in a RAM Hash Map on startup, allowing direct single-read disk fetches on `get()`.
+-  Keys in RAM live inside a dedicated Arena Allocator, eliminating memory fragmentation and wiping all index memory simultaneously on shutdown.
+-  Deletes append a zero-value tombstone record to preserve append-only invariants while purging keys from RAM.
+-  A `compact()` routine reclaims disk space by rewriting only live records to a fresh file and atomically replacing the bloated log.
+-  7 automated tests verifying end-to-end lifecycle, reboots, tombstone persistence, and zero memory leaks. (Well, I jst tried using this new approach where I would write tests for what I expect and make my code work around it, and it helped me build a lot of logic, and I get professional looking tests, so it's a win-win)
 
 ---
 
@@ -24,14 +24,15 @@ Built without external dependencies, frameworks, or hidden allocations. Uses a B
 Every record written to disk consists of a **fixed 12-byte header** followed by variable-length key and value byte payloads:
 
 ```text
-+-------------------+--------------------+--------------------+
-|  magic ([4]u8)    |   key_len (u32)    |  value_len (u32)   |
-|     4 Bytes       |      4 Bytes       |      4 Bytes       |
-+-------------------+--------------------+--------------------+
-|                      key payload (key_len bytes)            |
-+-------------------------------------------------------------+
-|                     value payload (value_len bytes)         |
-+-------------------------------------------------------------+
+┌────────────┬──────────────────────┬──────────────┐
+│ magic      │   key_len            │   value_len  │
+│ 4 bytes    │   4 bytes            │   4 bytes    │
+┼────────────┴──────────────────────┴──────────────┤
+│                 key payload                      │
+│                                                  │
+┼──────────────────────────────────────────────────┼
+│                 value payload                    │
+└──────────────────────────────────────────────────┘
 ```
 
 ### Struct Definition
@@ -48,25 +49,35 @@ const Header = extern struct {
 
 ## Quick Start
 
-### 1. Build & Run
+Probably you can just download binary from the releases, but if the release does not work, clone and build!
+
+```bash
+git clone https://github.com/chishxd/bedrock-db.git && cd bedrock-db
+zig build
+
+# The binary should now be located in zig-out/bin
+./zig-out/bin/bedrock-db
+```
+
+### Example Commands
 
 ```bash
 # Store a key-value pair
-zig build run -- set user goku
+bedrock-db set user goku
 
 # Update the key (appends new record to disk & updates RAM index)
-zig build run -- set user ultra_instinct
+bedrock-db set user ultra_instinct
 
 # Retrieve the latest value (Instant O(1) jump!)
-zig build run -- get user
+bedrock-db get user
 # Output: [FOUND] user = ultra_instinct
 
 # Delete a key (writes a tombstone to disk & removes from RAM index)
-zig build run -- del user
+bedrock-db del user
 # Output: [DELETED] Key 'user' removed
 
 # Query a deleted key
-zig build run -- get user
+bedrock-db get user
 # Output: [NOT FOUND] Key 'user' does not exist
 ```
 

@@ -67,6 +67,7 @@ pub const BedrockDB = struct {
         try writer.writeAll(key);
         try writer.writeAll(value);
     }
+
     pub fn buildIndex(self: *BedrockDB) !void {
         var read_buf: [1024]u8 = undefined;
         var file_reader = self.file.reader(self.io, &read_buf);

@@ -1,8 +1,9 @@
 # bedrock-db
 
-A zero-dependency, crash-resilient, append-only binary key-value storage engine written from scratch in pure **Zig 0.16**.
+A simple, no deps Appen-only Database written in Zig 0.16.
 
-Built without external dependencies, frameworks, or hidden allocations. Uses a Bitcask-style in-memory hash index for $O(1)$ disk lookups.
+Built without external dependencies, frameworks, or hidden allocations. 
+Uses a Bitcask-style in-memory hash index for O(1) disk lookups.
 
 ![demo-gif](https://cdn.hackclub.com/01a0a08e-6afe-7416-9406-379ae0bb938e/2026-09-14_21-04-03.gif)
 
@@ -12,16 +13,15 @@ Built without external dependencies, frameworks, or hidden allocations. Uses a B
 
 - Written purely with Zig 0.16 STD Library
 -  Key offsets are indexed in a RAM Hash Map on startup, allowing direct single-read disk fetches on `get()`.
--  Keys in RAM live inside a dedicated Arena Allocator, eliminating memory fragmentation and wiping all index memory simultaneously on shutdown.
--  Deletes append a zero-value tombstone record to preserve append-only invariants while purging keys from RAM.
--  A `compact()` routine reclaims disk space by rewriting only live records to a fresh file and atomically replacing the bloated log.
--  7 automated tests verifying end-to-end lifecycle, reboots, tombstone persistence, and zero memory leaks. (Well, I jst tried using this new approach where I would write tests for what I expect and make my code work around it, and it helped me build a lot of logic, and I get professional looking tests, so it's a win-win)
+-  Keys in RAM live inside a dedicated Arena Allocator, which will clear all memory at once rather than in loops-- which can also cause memory fragmentation
+-  Deletes append a tombstone record to preserve append-only values while purging keys from RAM.
+-  A `compact()` routine will delete all extra unwanted rows.
 
 ---
 
 ## On-Disk Binary Format
 
-Every record written to disk consists of a **fixed 12-byte header** followed by variable-length key and value byte payloads:
+Every record written to disk consists of a fixed 12-byte header followed by variable-length key and value byte payloads:
 
 ```text
 ┌────────────┬──────────────────────┬──────────────┐
